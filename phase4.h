@@ -29,6 +29,17 @@ extern  int  TermWrite(char *buffer, int bufferSize, int unitID,
 
 extern  int  start4(char *);
 
+/*----------phase4 procStruct ----------*/
+typedef struct procStruct procStruct;
+typedef struct procStruct *procPtr;
+
+struct procStruct{
+    int         pid;
+    procPtr     nextSleepPtr;
+    int         privateMboxID; // used in self blocked
+    int         wakeTime; // in microsecond
+};
+
 #define ERR_INVALID             -1
 #define ERR_OK                  0
 
