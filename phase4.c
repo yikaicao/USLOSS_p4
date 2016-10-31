@@ -1,22 +1,31 @@
 #include <usloss.h>
+#include <usyscall.h>
 #include <phase1.h>
 #include <phase2.h>
+#include <phase3.h>
+#include <phase4.h>
 #include <stdlib.h> /* needed for atoi() */
+#include <stdio.h>
+#include <libuser.h>
+#include <providedPrototypes.h>
 
 int semRunning;
 
+// driver processes
 static int ClockDriver(char *);
 static int DiskDriver(char *);
 
-void
-start3(void)
+// kernel helpers
+void check_kernel_mode(char *);
+
+void start3(void)
 {
-    char	name[128];
-    char        termbuf[10];
-    int		i;
-    int		clockPID;
-    int		pid;
-    int		status;
+    char    name[128];
+    char    buf[128];
+    int     i;
+    int     clockPID;
+    int     pid;
+    int     status;
     /*
      * Check kernel mode here.
      */
@@ -45,7 +54,7 @@ start3(void)
      * driver, and perhaps do something with the pid returned.
      */
     
-    for (i = 0; i < DISK_UNITS; i++) {
+    for (i = 0; i < USLOSS_DISK_UNITS; i++) {
         sprintf(buf, "%d", i);
         pid = fork1(name, DiskDriver, buf, USLOSS_MIN_STACK, 2);
         if (pid < 0) {
@@ -81,8 +90,8 @@ start3(void)
     
 }
 
-static int
-ClockDriver(char *arg)
+//%%%%%%%%%%%%%%%%%%%%%%%%% driver processes %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+static int ClockDriver(char *arg)
 {
     int result;
     int status;
@@ -92,8 +101,8 @@ ClockDriver(char *arg)
     USLOSS_PsrSet(USLOSS_PsrGet() | USLOSS_PSR_CURRENT_INT);
     
     // Infinite loop until we are zap'd
-    while(! is_zapped()) {
-        result = waitDevice(CLOCK_DEV, 0, &status);
+    while(! isZapped()) {
+        result = waitDevice(USLOSS_CLOCK_DEV, 0, &status);
         if (result != 0) {
             return 0;
         }
@@ -102,11 +111,23 @@ ClockDriver(char *arg)
          * whose time has come.
          */
     }
-}
-
-static int
-DiskDriver(char *arg)
-{
-    int unit = atoi( (char *) arg); 	// Unit is passed as arg.
+    
     return 0;
 }
+
+static int DiskDriver(char *arg)
+{
+    int unit = atoi( (char *) arg); 	// Unit is passed as arg.
+    return unit;
+}
+
+
+//%%%%%%%%%%%%%%%%%%%%%%%%% kernel helpers %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+/* ------------------------- check_kernel_mode ----------------------------------- */
+void check_kernel_mode(char *arg)
+{
+    if (!(USLOSS_PSR_CURRENT_MODE & USLOSS_PsrGet()))
+    {
+        USLOSS_Console("%s(): called while in user mode. Halting...\n", arg);
+    }
+} /* end of check_kernel_mode */
