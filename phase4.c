@@ -172,6 +172,7 @@ static int DiskDriver(char *arg)
 
 
 
+
 //%%%%%%%%%%%%%%%%%%%%%%%%% system helpers %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 /* ------------------------- sleep ----------------------------------- */
 void sleep(systemArgs *sysArg)
@@ -284,10 +285,32 @@ void addSleepRequest(procPtr* list, procPtr newSleep)
     if(debugflag4)
         USLOSS_Console("addSleepRequest(): pid %d, wakeTime %d\n", newSleep->pid, newSleep->wakeTime);
     
+    // add to empty list
     if (*list == NULL)
     {
         *list = newSleep;
+        return;
     }
+    // add to the head
+    procPtr tmp = *list;
+    if(tmp->wakeTime > newSleep->wakeTime)
+    {
+        newSleep->nextSleepPtr = *list;
+        *list = newSleep;
+        return;
+    }
+    // normal cases
+    procPtr prev = NULL;
+    procPtr curr = *list;
+    while(curr->wakeTime < newSleep->wakeTime)
+    {
+        prev = curr;
+        curr = curr->nextSleepPtr;
+        if(curr == NULL)
+            break;
+    }
+    prev->nextSleepPtr = newSleep;
+    newSleep->nextSleepPtr = curr;
     
     return;
 } /* end of addSleepRequest */
