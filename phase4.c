@@ -78,16 +78,16 @@ void start3(void)
      * driver, and perhaps do something with the pid returned.
      */
     
-//    for (i = 0; i < USLOSS_DISK_UNITS; i++) {
-//        sprintf(buf, "%d", i);
-//        pid = fork1(name, DiskDriver, buf, USLOSS_MIN_STACK, 2);
-//        if (pid < 0) {
-//            USLOSS_Console("start3(): Can't create term driver %d\n", i);
-//            USLOSS_Halt(1);
-//        }
-//    }
-//    sempReal(semRunning);
-//    sempReal(semRunning);
+    for (i = 0; i < USLOSS_DISK_UNITS; i++) {
+        sprintf(buf, "%d", i);
+        pid = fork1(name, DiskDriver, buf, USLOSS_MIN_STACK, 2);
+        if (pid < 0) {
+            USLOSS_Console("start3(): Can't create term driver %d\n", i);
+            USLOSS_Halt(1);
+        }
+    }
+    sempReal(semRunning);
+    sempReal(semRunning);
     
     /*
      * Create terminal device drivers.
@@ -103,11 +103,14 @@ void start3(void)
      */
     pid = spawnReal("start4", start4, NULL, 4 * USLOSS_MIN_STACK, 3);
     pid = waitReal(&status);
+    pid = join(&status);
+    pid = join(&status);
     
     /*
      * Zap the device drivers
      */
     zap(clockPID);  // clock driver
+    
     
     // eventually, at the end:
     quit(0);
@@ -163,6 +166,8 @@ static int DiskDriver(char *arg)
     int unit = atoi( (char *) arg); 	// Unit is passed as arg.
     return unit;
 } /* end of DiskDriver */
+
+
 
 
 
