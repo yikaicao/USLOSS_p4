@@ -8,6 +8,7 @@ CSRCS = ${COBJS:.o=.c}
 PHASE1LIB = patrickphase1
 PHASE2LIB = patrickphase2
 PHASE3LIB = patrickphase3
+
 #PHASE1LIB = patrickphase1debug
 #PHASE2LIB = patrickphase2debug
 #PHASE3LIB = patrickphase3debug
