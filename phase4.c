@@ -153,6 +153,7 @@ static int ClockDriver(char *arg)
         while (sleepList != NULL && sleepList->wakeTime < USLOSS_Clock())
         {
             MboxCondSend(sleepList->privateMboxID, 0, 0);
+            clearProcess(sleepList->pid); // clear procTable4
             sleepList = sleepList->nextSleepPtr;
         }
     }
@@ -271,6 +272,9 @@ int diskSizeReal(int unit, int* sector, int* track, int* disk)
     return 0;
     
 }
+
+
+
 
 
 
