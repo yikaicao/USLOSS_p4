@@ -42,4 +42,33 @@ int Sleep(int seconds)
     return (long) sysArg.arg4;
 }
 
-/* end libuser.c */
+/* end Sleep */
+
+/*
+ *  Routine:  DiskSize
+ *
+ *  Description: This routin returns information about the size of the disk (diskSize).
+ *
+ *  Arguments:    unit, how many bytes in one sector, how many sectors in one track, and how many tracks in one disk
+ *
+ *  Return Value: 0 means success, -1 means error occurs
+ *
+ */
+int DiskSize(int unit, int* sectorSize, int* trackSize, int* diskSize)
+{
+    systemArgs sysArg;
+    CHECKMODE;
+    
+    sysArg.number = SYS_DISKSIZE;
+    sysArg.arg1 = (void *) ((long) unit);
+    
+    USLOSS_Syscall(&sysArg);
+    
+    *sectorSize = (long)sysArg.arg1;
+    *trackSize  = (long)sysArg.arg2;
+    *diskSize   = (long)sysArg.arg3;
+    
+    return (long) sysArg.arg4;
+}
+
+/* end DiskSize */

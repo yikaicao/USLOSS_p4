@@ -14,6 +14,7 @@ int debugflag4 = 0;
 int semRunning;
 procStruct ProcTable[MAXPROC];
 procPtr sleepList;
+int diskTrack[USLOSS_DISK_UNITS]; // contains number of tracks per disk unit
 
 // driver processes
 static int ClockDriver(char *);
@@ -22,6 +23,8 @@ static int DiskDriver(char *);
 // system helpers
 void sleep(systemArgs *);
 int sleepReal(int);
+void diskSize(systemArgs *);
+int diskSizeReal(int, int*, int*, int*);
 
 // kernel helpers
 void check_kernel_mode(char *);
@@ -69,15 +72,14 @@ void start3(void)
      * Wait for the clock driver to start. The idea is that ClockDriver
      * will V the semaphore "semRunning" once it is running.
      */
-    
     sempReal(semRunning);
+    /* end of creating clock device driver */
     
     /*
      * Create the disk device drivers here.  You may need to increase
      * the stack size depending on the complexity of your
      * driver, and perhaps do something with the pid returned.
      */
-    
     for (i = 0; i < USLOSS_DISK_UNITS; i++) {
         sprintf(buf, "%d", i);
         pid = fork1(name, DiskDriver, buf, USLOSS_MIN_STACK, 2);
@@ -88,6 +90,8 @@ void start3(void)
     }
     sempReal(semRunning);
     sempReal(semRunning);
+    /* end of creating disk device driver */
+    
     
     /*
      * Create terminal device drivers.
@@ -159,11 +163,31 @@ static int ClockDriver(char *arg)
 /* ------------------------- DiskDriver ----------------------------------- */
 static int DiskDriver(char *arg)
 {
+    /*
+     * Initialization of disk driver
+     */
+    int unit = atoi( (char *) arg); 	// Unit is passed as arg.
+    int status;
+    
+    // update size of disk track
+    USLOSS_DeviceRequest req = (USLOSS_DeviceRequest){
+        .opr = USLOSS_DISK_TRACKS,
+        .reg1 = &diskTrack[unit],
+    };
+    
+    // request our device request
+    USLOSS_DeviceOutput(USLOSS_DISK_DEV, unit, &req);
+    waitDevice(USLOSS_DISK_DEV, unit, &status); // wait for request to be completed
+    
+    if (debugflag4)
+        USLOSS_Console("\t diskTrack[0] = %d\n", diskTrack[0]);
+    /* end of initialization of disk driver */
+    
     // Let the parent know we are running and enable interrupts.
     semvReal(semRunning);
     USLOSS_PsrSet(USLOSS_PsrGet() | USLOSS_PSR_CURRENT_INT);
     
-    int unit = atoi( (char *) arg); 	// Unit is passed as arg.
+    
     return unit;
 } /* end of DiskDriver */
 
@@ -179,11 +203,13 @@ void sleep(systemArgs *sysArg)
 {
     if (debugflag4)
         USLOSS_Console("sleep(): entered\n");
+    
     int seconds = (long) sysArg->arg1;
     
     sysArg->arg4 = (void *)((long)sleepReal(seconds));
     
     setUserMode();
+    
 } /* end of sleep */
 
 /* ------------------------- sleepReal ----------------------------------- */
@@ -194,22 +220,59 @@ int sleepReal(int seconds)
     
     long wakeTime = USLOSS_Clock() + (1000000 * seconds); // in microsecond
     
+    // construct newSleep process
     procPtr newSleep = &ProcTable[getpid() % MAXPROC];
     newSleep->nextSleepPtr = NULL;
     newSleep->wakeTime = wakeTime;
     newSleep->pid = getpid();
     
+    // put newSleep to queue
     addSleepRequest(&sleepList, newSleep);
     
-    //debug
-    //printSleepList();
-    //printProcTable();
-    
+    // block newSleep process
     MboxReceive(newSleep->privateMboxID, 0, 0);
     
     
     return 0;
 } /* end of sleepReal */
+
+/* ------------------------- diskSize ----------------------------------- */
+void diskSize(systemArgs *sysArg)
+{
+    if (debugflag4)
+        USLOSS_Console("diskSize(): entered\n");
+    
+    int unit = (long) sysArg->arg1;
+    
+    int sector, track, disk;
+    
+    // update sysArg
+    sysArg->arg4 = (void *)((long)diskSizeReal(unit, &sector, &track, &disk));
+    sysArg->arg1 = (void *) ((long)sector);
+    sysArg->arg2 = (void *) ((long)track);
+    sysArg->arg3 = (void *) ((long)disk);
+    
+    if (debugflag4)
+        USLOSS_Console("diskSize(): updated: unit %d, sector %d, track %d, disk %d\n", unit, sector, track, disk);
+    
+    setUserMode();
+} /* end of diskSize */
+
+/* ------------------------- diskSizeReal ----------------------------------- */
+int diskSizeReal(int unit, int* sector, int* track, int* disk)
+{
+    if (unit < 0 || unit >= USLOSS_DISK_UNITS)
+        return -1;
+    
+    *sector = USLOSS_DISK_SECTOR_SIZE;
+    *track = USLOSS_DISK_TRACK_SIZE;
+    *disk = diskTrack[unit];
+    
+    return 0;
+    
+}
+
+
 
 
 
@@ -240,6 +303,7 @@ void initSysCallVec()
     
     // known vectors
     systemCallVec[SYS_SLEEP] = (void *)sleep;
+    systemCallVec[SYS_DISKSIZE] = (void *)diskSize;
     
 } /* end of initSysCallVec */
 
