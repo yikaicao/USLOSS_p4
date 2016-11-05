@@ -72,3 +72,66 @@ int DiskSize(int unit, int* sectorSize, int* trackSize, int* diskSize)
 }
 
 /* end DiskSize */
+
+
+/*
+ *  Routine:  DiskRead
+ *
+ *  Description: This routin helps user-level processes to read one or more sectors from a disk.
+ *
+ *  Arguments:   As declared in the function.
+ *
+ *  Return Value: -1 if illegal values are given as input; 0 otherwise.
+ *
+ */
+int DiskRead(void *dbuff, int unit, int track, int first, int sectors, int *status)
+{
+    systemArgs sysArg;
+    CHECKMODE;
+    
+    sysArg.number   = SYS_DISKREAD;
+    sysArg.arg1     = dbuff;
+    sysArg.arg2     = (void *) ((long) sectors);
+    sysArg.arg3     = (void *) ((long) track);
+    sysArg.arg4     = (void *) ((long) first);
+    sysArg.arg5     = (void *) ((long) unit);
+    
+    USLOSS_Syscall(&sysArg);
+    
+    *status = (long) sysArg.arg1;
+    
+    return (long) sysArg.arg4;
+}
+
+/* end DiskRead */
+
+/*
+ *  Routine:  DiskWrite
+ *
+ *  Description: This routin helps user-level processes to write one or more sectors from a disk.
+ *
+ *  Arguments:   As declared in the function.
+ *
+ *  Return Value: -1 if illegal values are given as input; 0 otherwise.
+ *
+ */
+int DiskWrite(void *dbuff, int unit, int track, int first, int sectors, int *status)
+{
+    systemArgs sysArg;
+    CHECKMODE;
+    
+    sysArg.number   = SYS_DISKWRITE;
+    sysArg.arg1     = dbuff;
+    sysArg.arg2     = (void *) ((long) sectors);
+    sysArg.arg3     = (void *) ((long) track);
+    sysArg.arg4     = (void *) ((long) first);
+    sysArg.arg5     = (void *) ((long) unit);
+    
+    USLOSS_Syscall(&sysArg);
+    
+    *status = (long) sysArg.arg1;
+    
+    return (long) sysArg.arg4;
+}
+
+/* end DiskWrite */
