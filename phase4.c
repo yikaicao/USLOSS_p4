@@ -14,7 +14,10 @@ int debugflag4 = 0;
 int semRunning;
 procStruct ProcTable[MAXPROC];
 procPtr sleepList;
+
 int diskTrack[USLOSS_DISK_UNITS]; // contains number of tracks per disk unit
+int diskMbox[USLOSS_DISK_UNITS];
+procPtr diskQueue[USLOSS_DISK_UNITS];
 
 // driver processes
 static int ClockDriver(char *);
@@ -38,7 +41,6 @@ void printSleepList();
 
 void start3(void)
 {
-    char    name[128]; // name for driver processes
     char    buf[128]; // buffer for startarg
     int     i;
     int     clockPID;
@@ -72,17 +74,19 @@ void start3(void)
      * Wait for the clock driver to start. The idea is that ClockDriver
      * will V the semaphore "semRunning" once it is running.
      */
+    
     sempReal(semRunning);
-    /* end of creating clock device driver */
     
     /*
      * Create the disk device drivers here.  You may need to increase
      * the stack size depending on the complexity of your
      * driver, and perhaps do something with the pid returned.
      */
+    
     for (i = 0; i < USLOSS_DISK_UNITS; i++) {
         sprintf(buf, "%d", i);
-        pid = fork1(name, DiskDriver, buf, USLOSS_MIN_STACK, 2);
+        pid = fork1("Disk driver", DiskDriver, buf, USLOSS_MIN_STACK, 2);
+        diskQueue[i] = NULL;
         if (pid < 0) {
             USLOSS_Console("start3(): Can't create term driver %d\n", i);
             USLOSS_Halt(1);
@@ -90,8 +94,6 @@ void start3(void)
     }
     sempReal(semRunning);
     sempReal(semRunning);
-    /* end of creating disk device driver */
-    
     
     /*
      * Create terminal device drivers.
@@ -107,19 +109,25 @@ void start3(void)
      */
     pid = spawnReal("start4", start4, NULL, 4 * USLOSS_MIN_STACK, 3);
     pid = waitReal(&status);
-    pid = join(&status);
-    pid = join(&status);
+
     
     /*
      * Zap the device drivers
      */
     zap(clockPID);  // clock driver
-    
+    join(&status);
+    for (i = 0; i < USLOSS_DISK_UNITS; i++)
+    {
+        MboxSend(diskMbox[i], 0, 0);
+        join(&status);
+    }
     
     // eventually, at the end:
     quit(0);
     
 } /* end of start3 */
+
+
 
 
 
@@ -153,9 +161,14 @@ static int ClockDriver(char *arg)
         while (sleepList != NULL && sleepList->wakeTime < USLOSS_Clock())
         {
             MboxCondSend(sleepList->privateMboxID, 0, 0);
-            clearProcess(sleepList->pid); // clear procTable4
             sleepList = sleepList->nextSleepPtr;
         }
+    }
+    
+    procPtr proc = sleepList;
+    while(proc != NULL){
+        // Send to free a process
+        MboxSend(proc->privateMboxID, 0, 0);
     }
     
     return 0;
@@ -180,17 +193,33 @@ static int DiskDriver(char *arg)
     USLOSS_DeviceOutput(USLOSS_DISK_DEV, unit, &req);
     waitDevice(USLOSS_DISK_DEV, unit, &status); // wait for request to be completed
     
-    if (debugflag4)
-        USLOSS_Console("\t diskTrack[0] = %d\n", diskTrack[0]);
-    /* end of initialization of disk driver */
+    // create disk driver's private mail box
+    diskMbox[unit] = MboxCreate(1, 0);
     
     // Let the parent know we are running and enable interrupts.
     semvReal(semRunning);
     USLOSS_PsrSet(USLOSS_PsrGet() | USLOSS_PSR_CURRENT_INT);
+    /* end of initialization */
+    
+    // begin its service
+    while (!isZapped())
+    {
+        MboxReceive(diskMbox[unit], NULL, 0);
+        if (diskQueue[unit] == NULL)
+        {
+            if (debugflag4)
+                USLOSS_Console("DiskDriver(): no more request, disk %d quitting.\n", unit);
+            break;
+        }
+    }
     
     
     return unit;
 } /* end of DiskDriver */
+
+
+
+
 
 
 
@@ -204,13 +233,11 @@ void sleep(systemArgs *sysArg)
 {
     if (debugflag4)
         USLOSS_Console("sleep(): entered\n");
-    
     int seconds = (long) sysArg->arg1;
     
     sysArg->arg4 = (void *)((long)sleepReal(seconds));
     
     setUserMode();
-    
 } /* end of sleep */
 
 /* ------------------------- sleepReal ----------------------------------- */
@@ -227,10 +254,10 @@ int sleepReal(int seconds)
     newSleep->wakeTime = wakeTime;
     newSleep->pid = getpid();
     
-    // put newSleep to queue
+    // put request on queue
     addSleepRequest(&sleepList, newSleep);
     
-    // block newSleep process
+    // put process to sleep
     MboxReceive(newSleep->privateMboxID, 0, 0);
     
     
@@ -271,7 +298,12 @@ int diskSizeReal(int unit, int* sector, int* track, int* disk)
     
     return 0;
     
-}
+} /* end of diskSizeReal */
+
+
+
+
+
 
 
 
