@@ -38,6 +38,13 @@ struct procStruct{
     procPtr     nextSleepPtr;
     int         privateMboxID; // used in self blocked
     int         wakeTime; // in microsecond
+    procPtr     nextDiskPtr;
+    int         opr;
+    char*       buf;
+    int         sectors;
+    int         track;
+    int         first;
+    int         unit;
 };
 
 #define ERR_INVALID             -1

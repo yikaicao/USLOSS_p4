@@ -11,10 +11,12 @@
 
 // global structures
 int debugflag4 = 0;
+int diskDebug = 0;
 int semRunning;
 procStruct ProcTable[MAXPROC];
 procPtr sleepList;
 
+int diskFinishFlag[USLOSS_DISK_UNITS];
 int diskTrack[USLOSS_DISK_UNITS]; // contains number of tracks per disk unit
 int diskMbox[USLOSS_DISK_UNITS];
 procPtr diskQueue[USLOSS_DISK_UNITS];
@@ -28,6 +30,11 @@ void sleep(systemArgs *);
 int sleepReal(int);
 void diskSize(systemArgs *);
 int diskSizeReal(int, int*, int*, int*);
+void diskWrite(systemArgs *);
+int diskWriteReal(char*, int, int, int, int, int*);
+int diskRequest(char*, int, int, int, int);
+void diskRead(systemArgs *);
+int diskReadReal(char*, int, int, int, int, int*);
 
 // kernel helpers
 void check_kernel_mode(char *);
@@ -38,6 +45,9 @@ void clearProcess(int);
 void printProcTable();
 void addSleepRequest(procPtr*, procPtr);
 void printSleepList();
+void addDiskRequest(procPtr*, procPtr);
+void printDiskReqQueue(procPtr*);
+void dequeueDiskReq(procPtr*);
 
 void start3(void)
 {
@@ -53,11 +63,12 @@ void start3(void)
     check_kernel_mode("start3");
     
     /*
-     * Initialization
+     * Initialize phase4 supportive structures
      */
     initSysCallVec();
     initProcTable();
-    sleepList = NULL;
+    
+    
     
     /*
      * Create clock device driver
@@ -65,6 +76,7 @@ void start3(void)
      * be used instead -- your choice.
      */
     semRunning = semcreateReal(0);
+    sleepList = NULL;
     clockPID = fork1("Clock driver", ClockDriver, NULL, USLOSS_MIN_STACK, 2);
     if (clockPID < 0) {
         USLOSS_Console("start3(): Can't create clock driver\n");
@@ -74,19 +86,21 @@ void start3(void)
      * Wait for the clock driver to start. The idea is that ClockDriver
      * will V the semaphore "semRunning" once it is running.
      */
-    
     sempReal(semRunning);
+    /* --------------------------------------------ClockDriver created */
+    
+    
     
     /*
      * Create the disk device drivers here.  You may need to increase
      * the stack size depending on the complexity of your
      * driver, and perhaps do something with the pid returned.
      */
-    
     for (i = 0; i < USLOSS_DISK_UNITS; i++) {
         sprintf(buf, "%d", i);
         pid = fork1("Disk driver", DiskDriver, buf, USLOSS_MIN_STACK, 2);
         diskQueue[i] = NULL;
+        diskFinishFlag[i] = 0;
         if (pid < 0) {
             USLOSS_Console("start3(): Can't create term driver %d\n", i);
             USLOSS_Halt(1);
@@ -94,10 +108,14 @@ void start3(void)
     }
     sempReal(semRunning);
     sempReal(semRunning);
+    /* --------------------------------------------DiskDriver(s) created */
     
     /*
      * Create terminal device drivers.
      */
+    /* --------------------------------------------TerminalDriver(s) created */
+    
+    
     
     
     /*
@@ -118,6 +136,7 @@ void start3(void)
     join(&status);
     for (i = 0; i < USLOSS_DISK_UNITS; i++)
     {
+        diskFinishFlag[i] = 1;
         MboxSend(diskMbox[i], 0, 0);
         join(&status);
     }
@@ -194,7 +213,7 @@ static int DiskDriver(char *arg)
     waitDevice(USLOSS_DISK_DEV, unit, &status); // wait for request to be completed
     
     // create disk driver's private mail box
-    diskMbox[unit] = MboxCreate(1, 0);
+    diskMbox[unit] = MboxCreate(MAXPROC, 0);
     
     // Let the parent know we are running and enable interrupts.
     semvReal(semRunning);
@@ -205,17 +224,85 @@ static int DiskDriver(char *arg)
     while (!isZapped())
     {
         MboxReceive(diskMbox[unit], NULL, 0);
-        if (diskQueue[unit] == NULL)
+        
+        // quit DiskDriver when start4 is finished
+        if (diskFinishFlag[unit])
         {
             if (debugflag4)
                 USLOSS_Console("DiskDriver(): no more request, disk %d quitting.\n", unit);
             break;
         }
+        
+        
+        // get the head request
+        procPtr headReq = diskQueue[unit];
+        
+        if (debugflag4 || diskDebug)
+            USLOSS_Console("DiskDriver(): disk %d woke up\n\t going to %s track %d requested by process %d\n", unit, headReq->opr == USLOSS_DISK_WRITE ? "write" : "read", headReq->track, headReq->pid);
+        
+        
+        // move to the right track
+        USLOSS_DeviceRequest req;
+        req.opr = USLOSS_DISK_SEEK;
+        req.reg1 = (void*)(long)headReq->track;
+        USLOSS_DeviceOutput(USLOSS_DISK_DEV, unit, &req);
+        waitDevice(USLOSS_DISK_DEV, unit, &status);
+        
+        // start to read or write
+        int sectorCounter = headReq->sectors;
+        int currSector = headReq->first;
+        int currTrack = headReq->track;
+        char* buf = headReq->buf;
+        while (sectorCounter > 0)
+        {
+            req.opr = headReq->opr;
+            req.reg1 = (void*)(long)currSector;
+            req.reg2 = (void*)(long)buf;
+            USLOSS_DeviceOutput(USLOSS_DISK_DEV, unit, &req);
+            waitDevice(USLOSS_DISK_DEV, unit, &status);
+            
+            currSector++;
+            
+            // track wrap around
+            if(currSector >= diskTrack[unit]){
+                if (debugflag4)
+                    USLOSS_Console("DiskDriver(): wrapped around\n");
+                currSector = 0;
+                currTrack = (currTrack + 1) % diskTrack[unit];
+                
+                // move to next track
+                req.opr = USLOSS_DISK_SEEK;
+                req.reg1 = (void*)(long)currTrack;
+                USLOSS_DeviceOutput(USLOSS_DISK_DEV, unit, &req);
+                waitDevice(USLOSS_DISK_DEV, unit, &status);
+            }
+            
+            buf += USLOSS_DISK_SECTOR_SIZE;
+            
+            sectorCounter--;
+        }
+        
+        if (debugflag4 || diskDebug)
+            USLOSS_Console("DiskDriver(): request on track %d by process %d completed\n", headReq->track, headReq->pid);
+        
+        // move headReq to next request
+        dequeueDiskReq(&diskQueue[unit]);
+        
+        if (debugflag4 || diskDebug)
+        {
+            USLOSS_Console("\tafter dequeue, new list is\n");
+            printDiskReqQueue(&diskQueue[unit]);
+        }
+        
+        // unblock waiting user-level process
+        MboxSend(headReq->privateMboxID, NULL, 0);
+        
     }
-    
     
     return unit;
 } /* end of DiskDriver */
+
+
 
 
 
@@ -300,6 +387,130 @@ int diskSizeReal(int unit, int* sector, int* track, int* disk)
     
 } /* end of diskSizeReal */
 
+/* ------------------------- diskWrite ----------------------------------- */
+void diskWrite(systemArgs *sysArg)
+{
+    char* writeBuf = sysArg->arg1;
+    int sectors = (long)sysArg->arg2;
+    int track   = (long)sysArg->arg3;
+    int first   = (long)sysArg->arg4;
+    int unit    = (long)sysArg->arg5;
+    
+    if (debugflag4)
+        USLOSS_Console("diskWrite(): writing: \n\t %s\n\t on unit %d, starting with track %d sector %d for %d sector(s)\n", writeBuf, unit, track, first, sectors);
+    
+    int status = 0; // 0 if transfer was sucessful; the disk status register otherwise
+    int writeResult = diskWriteReal(writeBuf, sectors, track, first, unit, &status);
+    
+    sysArg->arg1 = (void *) ((long)status);
+    sysArg->arg4 = (void *) ((long)writeResult);
+    
+} /* end of diskWrite */
+
+/* ------------------------- diskWriteReal ----------------------------------- */
+// purpose: call diskRequest to put new disk request on queue, wake up DiskDriver before blocking whichever user-level process that calls DiskWrite and wait till DiskDriver to finish this request
+int diskWriteReal(char* writeBuf, int sectors, int track, int first, int unit, int* status)
+{
+    // handle illegal input
+    if (unit < 0 || unit >= USLOSS_DISK_UNITS)
+        return -1;
+    if (sectors < 0 || track < 0 || track >= diskTrack[unit] || first >= USLOSS_DISK_TRACK_SIZE)
+        return -1;
+    
+    
+    
+    // put request on queue
+    ProcTable[getpid() % MAXPROC].opr = USLOSS_DISK_WRITE;
+    diskRequest(writeBuf, sectors, track, first, unit);
+    
+    if (debugflag4 || diskDebug)
+    {
+        USLOSS_Console("\tdiskWriteReal(): after process %d's request received\n", getpid());
+        printDiskReqQueue(&diskQueue[unit]);
+        USLOSS_Console("\tdiskWriteReal(): process %d unblocking DeviceDriver %d\n", getpid(), unit);
+    }
+    
+    // wake up disk driver
+    MboxSend(diskMbox[unit], NULL, 0);
+    
+    if (debugflag4 || diskDebug)
+        USLOSS_Console("\tdiskWriteReal(): blocking pid %d\n", getpid());
+    
+    // block current running user-level process
+    MboxReceive(ProcTable[getpid() % MAXPROC].privateMboxID, 0, 0);
+    
+    if (debugflag4 || diskDebug)
+        USLOSS_Console("\tdiskWriteReal(): process %d's request on track %d finished\n", getpid(), track);
+    
+    return 0;
+} /* end of diskWriteReal */
+
+/* ------------------------- diskRequest ----------------------------------- */
+// purpose: log new disk request process in procTable4, call addDiskRequest to put new request on disk's queue
+int diskRequest(char* buf, int sectors, int track, int first, int unit)
+{
+    if (debugflag4)
+        USLOSS_Console("diskRequest(): enetered\n");
+    
+    int status = 0;
+    
+    // construct new disk request process
+    procPtr newDisk = &ProcTable[getpid() % MAXPROC];
+    newDisk->nextDiskPtr    = NULL;
+    newDisk->pid            = getpid();
+    newDisk->buf            = buf;
+    newDisk->sectors        = sectors;
+    newDisk->track          = track;
+    newDisk->first          = first;
+    newDisk->unit           = unit;
+    
+    // put request on queue
+    addDiskRequest(&diskQueue[unit], newDisk);
+    
+    return status;
+} /* end of diskRequest */
+
+/* ------------------------- diskRead ----------------------------------- */
+void diskRead(systemArgs *sysArg)
+{
+    char* readBuf = sysArg->arg1;
+    int sectors = (long)sysArg->arg2;
+    int track   = (long)sysArg->arg3;
+    int first   = (long)sysArg->arg4;
+    int unit    = (long)sysArg->arg5;
+    
+    if (debugflag4)
+        USLOSS_Console("diskRead(): reading on unit %d, starting with track %d sector %d for %d sector(s)\n", unit, track, first, sectors);
+    
+    int status = 0; // 0 if transfer was sucessful; the disk status register otherwise
+    int readResult = diskReadReal(readBuf, sectors, track, first, unit, &status);
+    
+    sysArg->arg1 = (void *) ((long)status);
+    sysArg->arg4 = (void *) ((long)readResult);
+    
+} /* end of diskRead */
+
+/* ------------------------- diskReadReal ----------------------------------- */
+int diskReadReal(char* readBuf, int sectors, int track, int first, int unit, int* status)
+{
+    // handle illegal input
+    if (unit < 0 || unit >= USLOSS_DISK_UNITS)
+        return -1;
+    if (sectors < 0 || track < 0 || track >= USLOSS_DISK_TRACK_SIZE)
+        return -1;
+    
+    // put request on queue
+    ProcTable[getpid() % MAXPROC].opr = USLOSS_DISK_READ;
+    *status = diskRequest(readBuf, sectors, track, first, unit);
+    
+    // wake up disk driver
+    MboxSend(diskMbox[unit], NULL, 0);
+    
+    // block current running user-level process
+    MboxReceive(ProcTable[getpid() % MAXPROC].privateMboxID, 0, 0);
+    
+    return 0;
+} /* end of diskWriteReal */
 
 
 
@@ -340,6 +551,8 @@ void initSysCallVec()
     // known vectors
     systemCallVec[SYS_SLEEP] = (void *)sleep;
     systemCallVec[SYS_DISKSIZE] = (void *)diskSize;
+    systemCallVec[SYS_DISKWRITE] = (void *)diskWrite;
+    systemCallVec[SYS_DISKREAD] = (void *)diskRead;
     
 } /* end of initSysCallVec */
 
@@ -425,3 +638,98 @@ void printSleepList()
         tmp = tmp->nextSleepPtr;
     }
 } /* end of printSleepList */
+
+/* ------------------------- addDiskRequest ----------------------------------- */
+// similar with addSleepList, same algorithm, be careful with the track directions
+void addDiskRequest(procPtr* diskReqQueue, procPtr newDisk)
+{
+    if (debugflag4)
+        USLOSS_Console("addDiskRequest(): inserting request for track #%d\n", newDisk->track);
+    
+    procPtr head = *diskReqQueue;
+    if (*diskReqQueue == NULL)
+    {
+        *diskReqQueue = newDisk;
+        return;
+    }
+    // adding when track is to the left of current
+    else if (head->track < newDisk->track)
+    {
+        procPtr prev = NULL;
+        procPtr tmp = *diskReqQueue;
+        
+        while (tmp->track < newDisk->track)
+        {
+            if (tmp->track < head->track)
+            {
+                prev->nextDiskPtr = newDisk;
+                newDisk->nextDiskPtr = tmp;
+                return;
+            }
+            prev = tmp;
+            tmp = tmp->nextDiskPtr;
+            if (tmp == NULL)
+                break;
+        }
+        prev->nextDiskPtr = newDisk;
+        newDisk->nextDiskPtr = tmp;
+    }
+    // adding when track is to the right of current
+    else
+    {
+        procPtr prev = NULL;
+        procPtr tmp = *diskReqQueue;
+        
+        while (tmp->track > newDisk->track)
+        {
+            prev = tmp;
+            tmp = tmp->nextDiskPtr;
+            if (tmp == NULL)
+                break;
+            if (tmp->track < head->track)
+                break;
+        }
+        if (debugflag4)
+            USLOSS_Console("\t\t wrapped around, tmp %d, prev %d\n", tmp == NULL ? -1 : tmp->track, prev->track);
+        if (tmp == NULL)
+        {
+            prev->nextDiskPtr = newDisk;
+            newDisk->nextDiskPtr = NULL;
+            return;
+        }
+        while (tmp->track <= newDisk->track)
+        {
+            prev = tmp;
+            tmp = tmp->nextDiskPtr;
+            if (tmp == NULL)
+                break;
+        }
+        if (debugflag4)
+            USLOSS_Console("\t\t out of loop, tmp %d, prev %d\n", tmp == NULL ? -1 : tmp->track, prev->track);
+        
+        prev->nextDiskPtr = newDisk;
+        newDisk->nextDiskPtr = tmp;
+        return;
+    }
+    
+    return;
+} /* end of addDiskRequest */
+
+/* ------------------------- printDiskReqQueue ----------------------------------- */
+void printDiskReqQueue(procPtr* diskReqQueue)
+{
+    procPtr tmp = *diskReqQueue;
+    while(tmp != NULL)
+    {
+        USLOSS_Console("\t printDiskReqQueue(): %d wants to %s on track %d\n", tmp->pid, tmp->opr == USLOSS_DISK_WRITE ? "write" : "read", tmp->track);
+        tmp = tmp->nextDiskPtr;
+    }
+} /* end of printDiskReqQueue */
+
+/* ------------------------- dequeueDiskReq ----------------------------------- */
+void dequeueDiskReq(procPtr* diskQueue)
+{
+    procPtr head = *diskQueue;
+    *diskQueue = head->nextDiskPtr;
+    return;
+}
