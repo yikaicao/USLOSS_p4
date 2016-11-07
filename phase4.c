@@ -16,14 +16,25 @@ int semRunning;
 procStruct ProcTable[MAXPROC];
 procPtr sleepList;
 
+// disk structures
 int diskFinishFlag[USLOSS_DISK_UNITS];
 int diskTrack[USLOSS_DISK_UNITS]; // contains number of tracks per disk unit
 int diskMbox[USLOSS_DISK_UNITS];
 procPtr diskQueue[USLOSS_DISK_UNITS];
 
+// term structures
+int termDriverPID[USLOSS_TERM_UNITS];
+int termReaderPID[USLOSS_TERM_UNITS];
+int termReaderMbox[USLOSS_TERM_UNITS]; // to transfer status register
+int termWriterPID[USLOSS_TERM_UNITS];
+int termWriterMbox[USLOSS_TERM_UNITS]; // to transfer status register
+
 // driver processes
 static int ClockDriver(char *);
 static int DiskDriver(char *);
+static int TermDriver(char *);
+static int TermReader(char *);
+static int TermWriter(char *);
 
 // system helpers
 void sleep(systemArgs *);
@@ -113,9 +124,20 @@ void start3(void)
     /*
      * Create terminal device drivers.
      */
+    for (i = 0; i < USLOSS_TERM_UNITS; i++)
+    {
+        sprintf(buf, "%d", i);
+        termDriverPID[i] = fork1("Term driver", TermDriver, buf, USLOSS_MIN_STACK, 2);
+        
+        termReaderMbox[i] = MboxCreate(0, sizeof(int));
+        termReaderPID[i] = fork1("Term reader", TermReader, buf, USLOSS_MIN_STACK, 2);
+        termWriterMbox[i] = MboxCreate(0, sizeof(int));
+        termWriterPID[i] = fork1("Term writer", TermWriter, buf, USLOSS_MIN_STACK, 2);
+        sempReal(semRunning);
+        sempReal(semRunning);
+        sempReal(semRunning);
+    }
     /* --------------------------------------------TerminalDriver(s) created */
-    
-    
     
     
     /*
@@ -126,7 +148,9 @@ void start3(void)
      * with lower-case first letters.
      */
     pid = spawnReal("start4", start4, NULL, 4 * USLOSS_MIN_STACK, 3);
+    
     pid = waitReal(&status);
+    
 
     
     /*
@@ -134,12 +158,46 @@ void start3(void)
      */
     zap(clockPID);  // clock driver
     join(&status);
+    
+    // quit disk drivers
     for (i = 0; i < USLOSS_DISK_UNITS; i++)
     {
         diskFinishFlag[i] = 1;
         MboxSend(diskMbox[i], 0, 0);
         join(&status);
     }
+    
+    // quit term drivers
+    char filename[20]; // a buffer to store terminal file names
+    for (i = 0; i < USLOSS_TERM_UNITS; i++)
+    {
+        // wake up term driver one more time
+        int ctrl = 0;
+        ctrl = USLOSS_TERM_CTRL_RECV_INT(ctrl);
+        USLOSS_DeviceOutput(USLOSS_TERM_DEV, i, (void *)((long) ctrl));
+        
+        // update the terminal file in order to quit USLOSS
+        sprintf(filename, "term%d.in", i);
+        FILE *f = fopen(filename, "a+");
+        fprintf(f, "End of this simulation\n");
+        fflush(f);
+        fclose(f);
+        
+        // zap term driver and join it
+        zap(termDriverPID[i]);
+        join(&status);
+        
+        // zap term reader and join it
+        MboxSend(termReaderMbox[i], NULL, 0);
+        zap(termReaderPID[i]);
+        join(&status);
+        
+        // zap term writer and join it
+        MboxSend(termWriterMbox[i], NULL, 0);
+        zap(termWriterPID[i]);
+        join(&status);
+    }
+    /* end of zapping device drivers */
     
     // eventually, at the end:
     quit(0);
@@ -301,6 +359,69 @@ static int DiskDriver(char *arg)
     
     return unit;
 } /* end of DiskDriver */
+
+/* ------------------------- TermDriver ----------------------------------- */
+static int TermDriver(char *arg)
+{
+    int unit = atoi((char *) arg);
+    int status;
+    int result;
+    
+    
+    semvReal(semRunning);
+    // end of initialization
+    
+    // begin its service
+    while (!isZapped())
+    {
+        result = waitDevice(USLOSS_TERM_DEV, unit, &status);
+    }
+    
+    return 0;
+} /* end of TermDriver */
+
+/* ------------------------- TermReader ----------------------------------- */
+static int TermReader(char *arg)
+{
+    int unit = atoi((char *) arg);
+    
+    semvReal(semRunning);
+    // end of initialization
+    
+    // begin its service
+    while (!isZapped())
+    {
+        int statusRegister;
+        MboxReceive(termReaderMbox[unit], &statusRegister, sizeof(int));
+        
+    }
+    
+    return 0;
+} /* end of TermReader */
+
+/* ------------------------- TermWriter ----------------------------------- */
+static int TermWriter(char *arg)
+{
+    int unit = atoi((char *) arg);
+    
+    semvReal(semRunning);
+    // end of initialization
+    
+    // begin its service
+    while (!isZapped())
+    {
+        int statusRegister;
+        MboxReceive(termWriterMbox[unit], &statusRegister, sizeof(int));
+        
+    }
+    
+    return 0;
+} /* end of TermWriter */
+
+
+
+
+
 
 
 

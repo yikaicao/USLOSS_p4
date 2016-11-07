@@ -40,9 +40,7 @@ int Sleep(int seconds)
     USLOSS_Syscall(&sysArg);
     
     return (long) sysArg.arg4;
-}
-
-/* end Sleep */
+} /* end Sleep */
 
 /*
  *  Routine:  DiskSize
@@ -69,9 +67,7 @@ int DiskSize(int unit, int* sectorSize, int* trackSize, int* diskSize)
     *diskSize   = (long)sysArg.arg3;
     
     return (long) sysArg.arg4;
-}
-
-/* end DiskSize */
+} /* end DiskSize */
 
 
 /*
@@ -101,9 +97,7 @@ int DiskRead(void *dbuff, int unit, int track, int first, int sectors, int *stat
     *status = (long) sysArg.arg1;
     
     return (long) sysArg.arg4;
-}
-
-/* end DiskRead */
+} /* end DiskRead */
 
 /*
  *  Routine:  DiskWrite
@@ -132,6 +126,31 @@ int DiskWrite(void *dbuff, int unit, int track, int first, int sectors, int *sta
     *status = (long) sysArg.arg1;
     
     return (long) sysArg.arg4;
-}
+} /* end DiskWrite */
 
-/* end DiskWrite */
+/*
+ *  Routine:  TermRead
+ *
+ *  Description: This routin helps user-level processes to read a line from a terminal
+ *
+ *  Arguments:   buf to store the line, maximum size of the buffer can be used, unit number of terminal, size of actual read line.
+ *
+ *  Return Value: -1 if illegal values are given as input; 0 otherwise.
+ *
+ */
+int TermRead(char* buf, int size, int unit, int* sizeRead)
+{
+    systemArgs sysArg;
+    CHECKMODE;
+    
+    sysArg.number   = SYS_TERMREAD;
+    sysArg.arg1     = buf;
+    sysArg.arg2     = (void *) ((long) size);
+    sysArg.arg3     = (void *) ((long) unit);
+    
+    USLOSS_Syscall(&sysArg);
+    
+    *sizeRead = (long) sysArg.arg2;
+    
+    return (long) sysArg.arg4;
+} /* end TermRead */
