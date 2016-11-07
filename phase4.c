@@ -25,9 +25,9 @@ procPtr diskQueue[USLOSS_DISK_UNITS];
 // term structures
 int termDriverPID[USLOSS_TERM_UNITS];
 int termReaderPID[USLOSS_TERM_UNITS];
-int termReaderMbox[USLOSS_TERM_UNITS]; // to transfer status register
+int charinMbox[USLOSS_TERM_UNITS]; // to transfer status register
 int termWriterPID[USLOSS_TERM_UNITS];
-int termWriterMbox[USLOSS_TERM_UNITS]; // to transfer status register
+int charoutMbox[USLOSS_TERM_UNITS]; // to transfer status register
 
 // driver processes
 static int ClockDriver(char *);
@@ -46,6 +46,8 @@ int diskWriteReal(char*, int, int, int, int, int*);
 int diskRequest(char*, int, int, int, int);
 void diskRead(systemArgs *);
 int diskReadReal(char*, int, int, int, int, int*);
+void termRead(systemArgs *);
+int termReadReal(char*, int, int, int*);
 
 // kernel helpers
 void check_kernel_mode(char *);
@@ -129,9 +131,9 @@ void start3(void)
         sprintf(buf, "%d", i);
         termDriverPID[i] = fork1("Term driver", TermDriver, buf, USLOSS_MIN_STACK, 2);
         
-        termReaderMbox[i] = MboxCreate(0, sizeof(int));
+        charinMbox[i] = MboxCreate(0, sizeof(int));
         termReaderPID[i] = fork1("Term reader", TermReader, buf, USLOSS_MIN_STACK, 2);
-        termWriterMbox[i] = MboxCreate(0, sizeof(int));
+        charoutMbox[i] = MboxCreate(0, sizeof(int));
         termWriterPID[i] = fork1("Term writer", TermWriter, buf, USLOSS_MIN_STACK, 2);
         sempReal(semRunning);
         sempReal(semRunning);
@@ -188,12 +190,12 @@ void start3(void)
         join(&status);
         
         // zap term reader and join it
-        MboxSend(termReaderMbox[i], NULL, 0);
+        MboxSend(charinMbox[i], NULL, 0);
         zap(termReaderPID[i]);
         join(&status);
         
         // zap term writer and join it
-        MboxSend(termWriterMbox[i], NULL, 0);
+        MboxSend(charoutMbox[i], NULL, 0);
         zap(termWriterPID[i]);
         join(&status);
     }
@@ -375,6 +377,10 @@ static int TermDriver(char *arg)
     while (!isZapped())
     {
         result = waitDevice(USLOSS_TERM_DEV, unit, &status);
+        //debug
+        //USLOSS_Console("TermDriver(): woke up.\n");
+        if (result != 0)
+            return 0;
     }
     
     return 0;
@@ -392,7 +398,7 @@ static int TermReader(char *arg)
     while (!isZapped())
     {
         int statusRegister;
-        MboxReceive(termReaderMbox[unit], &statusRegister, sizeof(int));
+        MboxReceive(charinMbox[unit], &statusRegister, sizeof(int));
         
     }
     
@@ -411,7 +417,7 @@ static int TermWriter(char *arg)
     while (!isZapped())
     {
         int statusRegister;
-        MboxReceive(termWriterMbox[unit], &statusRegister, sizeof(int));
+        MboxReceive(charoutMbox[unit], &statusRegister, sizeof(int));
         
     }
     
@@ -633,6 +639,46 @@ int diskReadReal(char* readBuf, int sectors, int track, int first, int unit, int
     return 0;
 } /* end of diskWriteReal */
 
+/* ------------------------- termRead ----------------------------------- */
+void termRead(systemArgs* sysArg)
+{
+    if (debugflag4)
+        USLOSS_Console("termRead(): entered\n");
+    
+    
+    char* buf = (char *) sysArg->arg1;
+    int size = (long) sysArg->arg2;
+    int unit = (long) sysArg->arg3;
+    
+    int sizeRead = 0;
+    int termResult = termReadReal(buf, size, unit, &sizeRead);
+    
+    sysArg->arg1 = (void *) ((long)sizeRead);
+    sysArg->arg4 = (void *) ((long)termResult);
+    
+} /* end of termRead */
+
+/* ------------------------- termReadReal ----------------------------------- */
+int termReadReal(char* buf, int size, int unit, int* sizeRead)
+{
+    // check illegal input values
+    if (size < 0 || size > MAXLINE || unit < 0 || unit >= USLOSS_TERM_UNITS)
+        return -1;
+    
+    // storage place to receive from TermReader
+    char recBuf[MAXLINE];
+    
+    // wake up TermDriver
+    int ctrl = 0;
+    ctrl = USLOSS_TERM_CTRL_RECV_INT(ctrl);
+    USLOSS_DeviceOutput(USLOSS_TERM_DEV, unit, (void *)((long)ctrl));
+    
+    // block on TermReaderMbox
+    
+    
+    return 0;
+}
+
 
 
 
@@ -674,6 +720,7 @@ void initSysCallVec()
     systemCallVec[SYS_DISKSIZE] = (void *)diskSize;
     systemCallVec[SYS_DISKWRITE] = (void *)diskWrite;
     systemCallVec[SYS_DISKREAD] = (void *)diskRead;
+    systemCallVec[SYS_TERMREAD] = (void *)termRead;
     
 } /* end of initSysCallVec */
 
