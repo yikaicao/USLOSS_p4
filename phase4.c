@@ -23,9 +23,11 @@ int diskMbox[USLOSS_DISK_UNITS];
 procPtr diskQueue[USLOSS_DISK_UNITS];
 
 // term structures
+int lineBuffered[USLOSS_TERM_UNITS];
 int termDriverPID[USLOSS_TERM_UNITS];
 int termReaderPID[USLOSS_TERM_UNITS];
 int charinMbox[USLOSS_TERM_UNITS]; // to transfer status register
+int termReaderMbox[USLOSS_TERM_UNITS]; // to transfer buffered one line to termReadReal
 int termWriterPID[USLOSS_TERM_UNITS];
 int charoutMbox[USLOSS_TERM_UNITS]; // to transfer status register
 
@@ -48,6 +50,8 @@ void diskRead(systemArgs *);
 int diskReadReal(char*, int, int, int, int, int*);
 void termRead(systemArgs *);
 int termReadReal(char*, int, int, int*);
+void termWrite(systemArgs *);
+int termWriteReal(char*, int, int, int*);
 
 // kernel helpers
 void check_kernel_mode(char *);
@@ -130,8 +134,13 @@ void start3(void)
     {
         sprintf(buf, "%d", i);
         termDriverPID[i] = fork1("Term driver", TermDriver, buf, USLOSS_MIN_STACK, 2);
-        
+        lineBuffered[i] = 0;
         charinMbox[i] = MboxCreate(0, sizeof(int));
+        
+        if (debugflag4)
+            USLOSS_Console("\tcreated mail box for term unit %d, with id of %d\n", i, charinMbox[i]);
+        
+        termReaderMbox[i] = MboxCreate(10, sizeof(char) * MAXLINE + 1);
         termReaderPID[i] = fork1("Term reader", TermReader, buf, USLOSS_MIN_STACK, 2);
         charoutMbox[i] = MboxCreate(0, sizeof(int));
         termWriterPID[i] = fork1("Term writer", TermWriter, buf, USLOSS_MIN_STACK, 2);
@@ -377,10 +386,24 @@ static int TermDriver(char *arg)
     while (!isZapped())
     {
         result = waitDevice(USLOSS_TERM_DEV, unit, &status);
-        //debug
-        //USLOSS_Console("TermDriver(): woke up.\n");
+        
+        if (debugflag4)
+            USLOSS_Console("\tTermDriver(): woke up.\n");
+        
         if (result != 0)
             return 0;
+        
+        // unblocked by TermRead
+        if (USLOSS_TERM_STAT_RECV(status) == USLOSS_DEV_BUSY)
+        {
+            if (debugflag4)
+                USLOSS_Console("\tTermDriver(): device %d received status of dev busy\n", unit);
+            
+            MboxSend(charinMbox[unit], &status, sizeof(int));
+            
+            if (debugflag4)
+                USLOSS_Console("\tTermDriver(): sent a status reg to mailbox %d\n", charinMbox[unit]);
+        }
     }
     
     return 0;
@@ -391,15 +414,78 @@ static int TermReader(char *arg)
 {
     int unit = atoi((char *) arg);
     
+    int statReg;
+    char curLine[MAXLINE + 1];
+    int curLinePos = 0;
+    
+    int i;
+    for (i = 0; i < MAXLINE + 1; i++)
+    {
+        curLine[i] = '\0';
+    }
+    
     semvReal(semRunning);
     // end of initialization
     
     // begin its service
     while (!isZapped())
     {
-        int statusRegister;
-        MboxReceive(charinMbox[unit], &statusRegister, sizeof(int));
+        MboxReceive(charinMbox[unit], &statReg, sizeof(int));
         
+        // get char received
+        char received = USLOSS_TERM_STAT_CHAR(statReg);
+        
+        if (debugflag4)
+            USLOSS_Console("\t\tTermReader(): unit %d received character '%c'\n", unit, received);
+        
+        // reaches MAXLINE
+        if (curLinePos == MAXLINE)
+        {
+            // finish up the current line
+            curLine[curLinePos] = '\n';
+            
+            if (debugflag4)
+                USLOSS_Console("\t\tTermReader(): unit %d sending an incomplete line\n", unit);
+            lineBuffered[unit]++;
+            MboxSend(termReaderMbox[unit], &curLine, MAXLINE);
+            
+            // wipe out current line to get ready for next line
+            curLinePos = 0;
+            for (i = 0; i < MAXLINE + 1; i++){
+                curLine[i] = '\0';
+            }
+            
+            // put received char to a new line
+            curLine[curLinePos] = received;
+            curLinePos++;
+        }
+        // reaches a newline
+        else if (received == '\n')
+        {
+            // finish up the current line
+            curLine[curLinePos] = received;
+            
+            if (debugflag4)
+                USLOSS_Console("\t\tTermReader(): unit %d sending a complete line\n", unit);
+            lineBuffered[unit]++;
+            MboxSend(termReaderMbox[unit], &curLine, MAXLINE);
+            
+            // wipe out current line to get ready for next line
+            curLinePos = 0;
+            for (i = 0; i < MAXLINE + 1; i++){
+                curLine[i] = '\0';
+            }
+            
+            // put received char to a new line
+            curLine[curLinePos] = received;
+            curLinePos++;
+        }
+        // normal cases
+        else
+        {
+            curLine[curLinePos] = received;
+            curLinePos++;
+        }
     }
     
     return 0;
@@ -653,7 +739,7 @@ void termRead(systemArgs* sysArg)
     int sizeRead = 0;
     int termResult = termReadReal(buf, size, unit, &sizeRead);
     
-    sysArg->arg1 = (void *) ((long)sizeRead);
+    sysArg->arg2 = (void *) ((long)sizeRead);
     sysArg->arg4 = (void *) ((long)termResult);
     
 } /* end of termRead */
@@ -674,10 +760,53 @@ int termReadReal(char* buf, int size, int unit, int* sizeRead)
     USLOSS_DeviceOutput(USLOSS_TERM_DEV, unit, (void *)((long)ctrl));
     
     // block on TermReaderMbox
+    MboxReceive(termReaderMbox[unit], recBuf, MAXLINE);
     
+    if (debugflag4)
+        USLOSS_Console("\ttermReadReal(): unit %d received a line:\n\t\t%s", unit, recBuf);
+    
+    // decrement line buffered
+    lineBuffered[unit]--;
+    
+    // transfer received line to char* buf char by char
+    int i = 0;
+    while (recBuf[i] != '\0' && i < size)
+    {
+        buf[i] = recBuf[i];
+        i++;
+    }
+    *sizeRead = i;
     
     return 0;
 }
+
+/* ------------------------- termWrite ----------------------------------- */
+void termWrite(systemArgs* sysArg)
+{
+    char* buf = (char*) sysArg->arg1;
+    int size = (long) sysArg->arg2;
+    int unit = (long) sysArg->arg3;
+    
+    int sizeWritten = 0;
+    int termResult = termWriteReal(buf, size, unit, &sizeWritten);
+    
+    sysArg->arg2 = (void *) ((long)sizeWritten);
+    sysArg->arg4 = (void *) ((long)termResult);
+} /* end of termWrite */
+
+/* ------------------------- termWriteReal ----------------------------------- */
+int termWriteReal(char* buf, int size, int unit, int* sizeWritten)
+{
+    // check illegal input values
+    if (size < 0 || size > MAXLINE || unit < 0 || unit >= USLOSS_TERM_UNITS)
+        return -1;
+    
+    return 0;
+}
+
+
+
+
 
 
 

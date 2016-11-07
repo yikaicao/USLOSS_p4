@@ -154,3 +154,30 @@ int TermRead(char* buf, int size, int unit, int* sizeRead)
     
     return (long) sysArg.arg4;
 } /* end TermRead */
+
+/*
+ *  Routine:    TermWrite
+ *
+ *  Description: This routin helps user-level processes to write a line to a terminal device
+ *
+ *  Arguments:   address of the user's line buffer, number of characters to write, the unit number of the terminal to which to write, actual size that is written
+ *
+ *  Return Value: -1 if illegal values are given as input; 0 otherwise.
+ *
+ */
+int TermWrite(char* buf, int size, int unit, int* sizeWritten)
+{
+    systemArgs sysArg;
+    CHECKMODE;
+    
+    sysArg.number   = SYS_TERMWRITE;
+    sysArg.arg1     = buf;
+    sysArg.arg2     = (void *) ((long) size);
+    sysArg.arg3     = (void *) ((long) unit);
+    
+    USLOSS_Syscall(&sysArg);
+    
+    *sizeWritten = (long) sysArg.arg2;
+    
+    return (long) sysArg.arg4;
+} /* end TermWrite */
