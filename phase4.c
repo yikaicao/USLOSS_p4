@@ -27,9 +27,12 @@ int lineBuffered[USLOSS_TERM_UNITS];
 int termDriverPID[USLOSS_TERM_UNITS];
 int termReaderPID[USLOSS_TERM_UNITS];
 int charinMbox[USLOSS_TERM_UNITS]; // to transfer status register
-int termReaderMbox[USLOSS_TERM_UNITS]; // to transfer buffered one line to termReadReal
+int termReaderMbox[USLOSS_TERM_UNITS]; // to transfer one buffered line to termReadReal
 int termWriterPID[USLOSS_TERM_UNITS];
 int charoutMbox[USLOSS_TERM_UNITS]; // to transfer status register
+int termWriterPIDMbox[USLOSS_TERM_UNITS]; // to keep track of which user process is blocked
+int termWriterLineMbox[USLOSS_TERM_UNITS]; // to transfer the line to be written
+int termWriteSem; // only allow one process to write on terminal device at the same time
 
 // driver processes
 static int ClockDriver(char *);
@@ -130,6 +133,7 @@ void start3(void)
     /*
      * Create terminal device drivers.
      */
+    termWriteSem = semcreateReal(1); // only allow one process to write at the same time
     for (i = 0; i < USLOSS_TERM_UNITS; i++)
     {
         sprintf(buf, "%d", i);
@@ -144,6 +148,8 @@ void start3(void)
         termReaderPID[i] = fork1("Term reader", TermReader, buf, USLOSS_MIN_STACK, 2);
         charoutMbox[i] = MboxCreate(0, sizeof(int));
         termWriterPID[i] = fork1("Term writer", TermWriter, buf, USLOSS_MIN_STACK, 2);
+        termWriterPIDMbox[i] = MboxCreate(1, sizeof(int));
+        termWriterLineMbox[i] = MboxCreate(10, sizeof(char) * MAXLINE + 1);
         sempReal(semRunning);
         sempReal(semRunning);
         sempReal(semRunning);
@@ -204,7 +210,7 @@ void start3(void)
         join(&status);
         
         // zap term writer and join it
-        MboxSend(charoutMbox[i], NULL, 0);
+        MboxSend(termWriterLineMbox[i], NULL, 0);
         zap(termWriterPID[i]);
         join(&status);
     }
@@ -404,6 +410,10 @@ static int TermDriver(char *arg)
             if (debugflag4)
                 USLOSS_Console("\tTermDriver(): sent a status reg to mailbox %d\n", charinMbox[unit]);
         }
+        if (USLOSS_TERM_STAT_XMIT(status) == USLOSS_DEV_READY)
+        {
+            MboxCondSend(charoutMbox[unit], &status, sizeof(int));
+        }
     }
     
     return 0;
@@ -447,7 +457,7 @@ static int TermReader(char *arg)
             if (debugflag4)
                 USLOSS_Console("\t\tTermReader(): unit %d sending an incomplete line\n", unit);
             lineBuffered[unit]++;
-            MboxSend(termReaderMbox[unit], &curLine, MAXLINE);
+            MboxCondSend(termReaderMbox[unit], &curLine, MAXLINE);
             
             // wipe out current line to get ready for next line
             curLinePos = 0;
@@ -468,7 +478,7 @@ static int TermReader(char *arg)
             if (debugflag4)
                 USLOSS_Console("\t\tTermReader(): unit %d sending a complete line\n", unit);
             lineBuffered[unit]++;
-            MboxSend(termReaderMbox[unit], &curLine, MAXLINE);
+            MboxCondSend(termReaderMbox[unit], &curLine, MAXLINE);
             
             // wipe out current line to get ready for next line
             curLinePos = 0;
@@ -496,14 +506,69 @@ static int TermWriter(char *arg)
 {
     int unit = atoi((char *) arg);
     
+    char result[MAXLINE + 1];
     semvReal(semRunning);
     // end of initialization
     
     // begin its service
     while (!isZapped())
     {
-        int statusRegister;
-        MboxReceive(charoutMbox[unit], &statusRegister, sizeof(int));
+        // get the line to be written
+        int sizeToWrite = MboxReceive(termWriterLineMbox[unit], result, MAXLINE + 1);
+        
+        if (isZapped())
+        {
+            if (debugflag4)
+                USLOSS_Console("\tTermWriter(): got fakePID, indicating I shall quit.\n");
+            break;
+        }
+        
+        
+        char writeLine[MAXLINE + 1];
+        
+        if (debugflag4)
+            USLOSS_Console("\tTermWriter(): going to write line size %d:\n\t\t%s", sizeToWrite, result);
+        
+        // turn on transmit bit
+        int ctrl = 0;
+        ctrl = USLOSS_TERM_CTRL_XMIT_INT((long)ctrl);
+        USLOSS_DeviceOutput(USLOSS_TERM_DEV, unit, (void*) ((long)ctrl));
+        
+        // write line char by char
+        int i = 0;
+        int status = 0;
+        while (sizeToWrite > i)
+        {
+            MboxReceive(charoutMbox[unit], &status, sizeof(int));
+            
+            //debug
+            //USLOSS_Console("%c", writeLine[i]);
+            
+            ctrl = 0;
+            ctrl =  USLOSS_TERM_CTRL_CHAR(ctrl, result[i]);
+            ctrl = USLOSS_TERM_CTRL_XMIT_INT(ctrl);
+            ctrl =  USLOSS_TERM_CTRL_XMIT_CHAR(ctrl);
+            
+            USLOSS_DeviceOutput(USLOSS_TERM_DEV, unit, (void*) ((long)ctrl));
+            
+            i++;
+            
+        }
+        
+        // read the last char
+        //MboxReceive(charoutMbox[unit], result, sizeof(result));
+        ctrl = 0;
+        ctrl =  USLOSS_TERM_CTRL_CHAR(ctrl, result[i]);
+        ctrl = USLOSS_TERM_CTRL_XMIT_INT(ctrl);
+        ctrl =  USLOSS_TERM_CTRL_XMIT_CHAR(ctrl);
+        USLOSS_DeviceOutput(USLOSS_TERM_DEV, unit, (void*) ((long)ctrl));
+        
+        // get which process to unblock
+        int pid = -1;
+        MboxReceive(termWriterPIDMbox[unit], &pid, sizeof(int));
+        
+        // unblock invoking process
+        MboxSend(ProcTable[pid % MAXPROC].privateMboxID, &sizeToWrite, sizeof(int));
         
     }
     
@@ -801,6 +866,25 @@ int termWriteReal(char* buf, int size, int unit, int* sizeWritten)
     if (size < 0 || size > MAXLINE || unit < 0 || unit >= USLOSS_TERM_UNITS)
         return -1;
     
+    // get to know this process
+    int pid = getpid();
+    ProcTable[pid % MAXPROC].pid = pid;
+    
+    if (debugflag4)
+        USLOSS_Console("\t\ttermWriteReal(): user process %d wants to write on term %d with the following message:\n\t\t%s\n\t\t\tIt will be blocked on its private mailbox %d.\n", pid, unit, buf, ProcTable[pid % MAXPROC].privateMboxID);
+    
+    // inform TermWriter the invoking process pid
+    MboxSend(termWriterPIDMbox[unit], &pid, sizeof(pid));
+    
+    // transfer the line that is going to be written
+    MboxSend(termWriterLineMbox[unit], buf, size);
+    
+    // block the invoking process
+    MboxReceive(ProcTable[pid % MAXPROC].privateMboxID, sizeWritten, sizeof(int));
+    
+    //debug
+    //*sizeWritten = size;
+    
     return 0;
 }
 
@@ -850,6 +934,7 @@ void initSysCallVec()
     systemCallVec[SYS_DISKWRITE] = (void *)diskWrite;
     systemCallVec[SYS_DISKREAD] = (void *)diskRead;
     systemCallVec[SYS_TERMREAD] = (void *)termRead;
+    systemCallVec[SYS_TERMWRITE] = (void *)termWrite;
     
 } /* end of initSysCallVec */
 
