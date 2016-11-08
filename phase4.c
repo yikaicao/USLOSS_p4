@@ -517,14 +517,7 @@ static int TermWriter(char *arg)
         int sizeToWrite = MboxReceive(termWriterLineMbox[unit], result, MAXLINE + 1);
         
         if (isZapped())
-        {
-            if (debugflag4)
-                USLOSS_Console("\tTermWriter(): got fakePID, indicating I shall quit.\n");
             break;
-        }
-        
-        
-        char writeLine[MAXLINE + 1];
         
         if (debugflag4)
             USLOSS_Console("\tTermWriter(): going to write line size %d:\n\t\t%s", sizeToWrite, result);
@@ -881,9 +874,6 @@ int termWriteReal(char* buf, int size, int unit, int* sizeWritten)
     
     // block the invoking process
     MboxReceive(ProcTable[pid % MAXPROC].privateMboxID, sizeWritten, sizeof(int));
-    
-    //debug
-    //*sizeWritten = size;
     
     return 0;
 }
