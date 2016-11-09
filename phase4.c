@@ -32,7 +32,6 @@ int termWriterPID[USLOSS_TERM_UNITS];
 int charoutMbox[USLOSS_TERM_UNITS]; // to transfer status register
 int termWriterPIDMbox[USLOSS_TERM_UNITS]; // to keep track of which user process is blocked
 int termWriterLineMbox[USLOSS_TERM_UNITS]; // to transfer the line to be written
-int termWriteSem; // only allow one process to write on terminal device at the same time
 
 // driver processes
 static int ClockDriver(char *);
@@ -133,7 +132,6 @@ void start3(void)
     /*
      * Create terminal device drivers.
      */
-    termWriteSem = semcreateReal(1); // only allow one process to write at the same time
     for (i = 0; i < USLOSS_TERM_UNITS; i++)
     {
         sprintf(buf, "%d", i);
@@ -352,6 +350,7 @@ static int DiskDriver(char *arg)
                 waitDevice(USLOSS_DISK_DEV, unit, &status);
             }
             
+            // move pointer in buf
             buf += USLOSS_DISK_SECTOR_SIZE;
             
             sectorCounter--;
@@ -384,9 +383,14 @@ static int TermDriver(char *arg)
     int status;
     int result;
     
-    
     semvReal(semRunning);
     // end of initialization
+    
+    
+    // set the recv int enable bit for all the terminals and leave them on
+    int ctrl = 0;
+    ctrl = USLOSS_TERM_CTRL_RECV_INT(ctrl);
+    result = USLOSS_DeviceOutput(USLOSS_TERM_DEV, unit, (void *)((long) ctrl));
     
     // begin its service
     while (!isZapped())
@@ -452,7 +456,7 @@ static int TermReader(char *arg)
         if (curLinePos == MAXLINE)
         {
             // finish up the current line
-            curLine[curLinePos] = '\n';
+            curLine[curLinePos] = '\0';
             
             if (debugflag4)
                 USLOSS_Console("\t\tTermReader(): unit %d sending an incomplete line\n", unit);
@@ -476,7 +480,7 @@ static int TermReader(char *arg)
             curLine[curLinePos] = received;
             
             if (debugflag4)
-                USLOSS_Console("\t\tTermReader(): unit %d sending a complete line\n", unit);
+                USLOSS_Console("\t\tTermReader(): unit %d sending a complete line:\n%s\n", unit, curLine);
             lineBuffered[unit]++;
             MboxCondSend(termReaderMbox[unit], &curLine, MAXLINE);
             
@@ -486,9 +490,6 @@ static int TermReader(char *arg)
                 curLine[i] = '\0';
             }
             
-            // put received char to a new line
-            curLine[curLinePos] = received;
-            curLinePos++;
         }
         // normal cases
         else
@@ -534,9 +535,6 @@ static int TermWriter(char *arg)
         {
             MboxReceive(charoutMbox[unit], &status, sizeof(int));
             
-            //debug
-            //USLOSS_Console("%c", writeLine[i]);
-            
             ctrl = 0;
             ctrl =  USLOSS_TERM_CTRL_CHAR(ctrl, result[i]);
             ctrl = USLOSS_TERM_CTRL_XMIT_INT(ctrl);
@@ -548,8 +546,7 @@ static int TermWriter(char *arg)
             
         }
         
-        // read the last char
-        //MboxReceive(charoutMbox[unit], result, sizeof(result));
+        // write the last char
         ctrl = 0;
         ctrl =  USLOSS_TERM_CTRL_CHAR(ctrl, result[i]);
         ctrl = USLOSS_TERM_CTRL_XMIT_INT(ctrl);
@@ -816,6 +813,9 @@ int termReadReal(char* buf, int size, int unit, int* sizeRead)
     int ctrl = 0;
     ctrl = USLOSS_TERM_CTRL_RECV_INT(ctrl);
     USLOSS_DeviceOutput(USLOSS_TERM_DEV, unit, (void *)((long)ctrl));
+    
+    if (debugflag4)
+        USLOSS_Console("\ttermReadReal(): going to read term %d, %d bytes\n", unit, size);
     
     // block on TermReaderMbox
     MboxReceive(termReaderMbox[unit], recBuf, MAXLINE);
